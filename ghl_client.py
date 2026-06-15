@@ -256,6 +256,57 @@ class GHLClient:
         # Bulk task search V2'de location bazlı endpoint sınırlı; contact bazlı ana yol.
         return {"tasks": []}
 
+    # ---------- forms ----------
+    def fetch_form_submissions(
+        self,
+        page: int = 1,
+        page_limit: int = 100,
+        start_at: int | None = None,
+        end_at: int | None = None,
+        form_id: str | None = None,
+    ) -> dict:
+        params: dict[str, Any] = {
+            "locationId": self.config.location_id,
+            "page": page,
+            "pageLimit": page_limit,
+        }
+        if start_at is not None:
+            params["startAt"] = start_at
+        if end_at is not None:
+            params["endAt"] = end_at
+        if form_id:
+            params["formId"] = form_id
+        return self._request("GET", "/forms/submissions", params=params)
+
+    def iter_all_form_submissions(
+        self,
+        date_after_ms: int | None = None,
+        date_before_ms: int | None = None,
+        max_records: int = 10000,
+        page_limit: int = 100,
+    ) -> Iterable[dict]:
+        page = 1
+        seen = 0
+        while seen < max_records:
+            batch_size = min(page_limit, max_records - seen)
+            data = self.fetch_form_submissions(
+                page=page,
+                page_limit=batch_size,
+                start_at=date_after_ms,
+                end_at=date_before_ms,
+            )
+            batch = data.get("submissions", [])
+            if not batch:
+                break
+            for s in batch:
+                yield s
+            seen += len(batch)
+            total = data.get("total", 0)
+            if seen >= total or len(batch) < batch_size:
+                break
+            page += 1
+        logger.info("Toplam %s form submission çekildi.", seen)
+
     # ---------- convenience ----------
     def user_name_map(self) -> dict[str, str]:
         return {

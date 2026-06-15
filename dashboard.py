@@ -25,6 +25,8 @@ from data_loader import (
     ABSOLUTE_MAX,
     aggregate_by,
     cached_count_for_range,
+    cached_form_count,
+    cached_form_submissions,
     cached_opportunities,
     cached_pipeline_counts,
     cached_pipelines,
@@ -35,6 +37,7 @@ from data_loader import (
     df_compact_sample,
     df_to_agent_context,
     fetch_chats_bulk,
+    form_submissions_to_df,
     maybe_fetch_chats_for_prompt,
     opportunities_to_df,
 )
@@ -193,8 +196,11 @@ try:
 except GHLAPIError:
     range_total = 0
 
+# Form submission sayısı = asıl lead sayısı
+form_lead_count = cached_form_count(date_after_ms, date_before_ms)
+
 st.sidebar.caption(
-    f"📅 Bu tarih aralığında **{range_total:,}** lead var "
+    f"📅 Bu tarih aralığında **{form_lead_count:,}** lead (form) var "
     f"(pipeline toplamı {total_in_ghl:,})."
 )
 
@@ -316,11 +322,11 @@ def page_home(filtered: pd.DataFrame) -> None:
     render_header(
         "Papatya Dental — BI Merkezi",
         "Tüm raporlara ve AI asistana tek noktadan erişim",
-        [date_badge, pipe_badge, f"Lead kapsamı: {len(filtered):,}"],
+        [date_badge, pipe_badge, f"Lead kapsamı: {form_lead_count:,}"],
     )
 
     render_metric_row([
-        ("Toplam Lead", f"{len(filtered):,}"),
+        ("Toplam Lead", f"{form_lead_count:,}"),
         ("Toplam Teklif", f"{int(filtered['is_offer'].sum()):,}", "alt"),
         ("Toplam Deal", f"{int(filtered['is_deal'].sum()):,}", "win"),
         ("Toplam Gelir", f"${filtered['deal_revenue'].sum():,.0f}", "win"),
@@ -368,7 +374,7 @@ def page_kaynak(filtered: pd.DataFrame) -> None:
     top_share = agg.iloc[0]["Dağılım"] if not agg.empty else 0
 
     render_metric_row([
-        ("Toplam Lead", f"{len(filtered):,}"),
+        ("Toplam Lead", f"{form_lead_count:,}"),
         ("Kaynak Sayısı", f"{filtered['source'].nunique():,}"),
         ("#1 Kaynak", top_src, "alt"),
         ("#1 Kaynak Oranı", f"%{top_share:.1f}", "alt"),
@@ -399,7 +405,7 @@ def page_satici(filtered: pd.DataFrame) -> None:
         agg["No Answer"] = agg["assigned_to"].map(no_ans).fillna(0).astype(int)
 
     render_metric_row([
-        ("Toplam Lead", f"{len(filtered):,}"),
+        ("Toplam Lead", f"{form_lead_count:,}"),
         ("Aktif Satıcı", f"{filtered['assigned_to'].nunique():,}"),
         ("Toplam Deal", f"{int(filtered['is_deal'].sum()):,}", "win"),
         ("Toplam Gelir", f"${filtered['deal_revenue'].sum():,.0f}", "win"),
@@ -424,18 +430,24 @@ def page_total(filtered: pd.DataFrame) -> None:
         f"{date_badge} aralığında toplam lead analizi",
         [date_badge, pipe_badge],
     )
-    if filtered.empty or filtered["created_at"].notna().sum() == 0:
-        st.warning("Tarih bilgisi olan kayıt yok.")
+
+    # Form submission'lardan günlük/haftalık breakdown
+    with st.spinner("Form submission verileri çekiliyor…"):
+        forms_raw = cached_form_submissions(date_after_ms, date_before_ms, max_records=10000)
+    forms_df = form_submissions_to_df(forms_raw)
+
+    if forms_df.empty or forms_df["created_at"].notna().sum() == 0:
+        st.warning("Form submission verisi yok.")
         return
 
     daily = (
-        filtered.dropna(subset=["created_at"])
+        forms_df.dropna(subset=["created_at"])
         .assign(day=lambda d: d["created_at"].dt.tz_convert("UTC").dt.date)
         .groupby("day").size().reset_index(name="Lead")
         .sort_values("day")
     )
     weekly = (
-        filtered.dropna(subset=["created_at"])
+        forms_df.dropna(subset=["created_at"])
         .assign(week=lambda d: d["created_at"].dt.tz_convert("UTC").dt.isocalendar().week)
         .groupby("week").size().reset_index(name="Lead")
         .sort_values("week")
@@ -453,7 +465,7 @@ def page_total(filtered: pd.DataFrame) -> None:
     lo = int(daily["Lead"].min()) if not daily.empty else 0
 
     render_metric_row([
-        ("Toplam Lead", f"{len(filtered):,}"),
+        ("Toplam Lead", f"{form_lead_count:,}"),
         ("Günlük Ort.", f"{avg:,}", "alt"),
         ("En Yüksek Gün", f"{hi:,}", "win"),
         ("En Düşük Gün", f"{lo:,}", "warn"),
@@ -518,7 +530,7 @@ def page_teklif(filtered: pd.DataFrame) -> None:
     teklif_to_deal_pct = (deal / max(teklif, 1)) * 100
 
     render_metric_row([
-        ("Toplam Lead", f"{total:,}"),
+        ("Toplam Lead", f"{form_lead_count:,}"),
         ("Teklif Aşamasında", f"{teklif:,}", "alt"),
         ("Pozitif (Açık)", f"{pozitif:,}", "alt"),
         ("Deal", f"{deal:,}", "win"),
@@ -603,15 +615,15 @@ def page_teklif(filtered: pd.DataFrame) -> None:
             "Toplam Gelir (Deal)",
         ],
         "Değer": [
-            f"{total:,}",
-            f"{teklif:,} (%{teklif/max(total,1)*100:.1f})",
+            f"{form_lead_count:,}",
+            f"{teklif:,} (%{teklif/max(form_lead_count,1)*100:.1f})",
             (
                 f"{teklif - pozitif - deal - negatif_teklif:,}"
                 if teklif >= pozitif + deal + negatif_teklif else f"{teklif:,}"
             ),
-            f"{pozitif:,} (%{pozitif/max(total,1)*100:.1f})",
-            f"{negatif_teklif:,} (%{negatif_teklif/max(total,1)*100:.1f})",
-            f"{deal:,} (%{deal/max(total,1)*100:.1f})",
+            f"{pozitif:,} (%{pozitif/max(form_lead_count,1)*100:.1f})",
+            f"{negatif_teklif:,} (%{negatif_teklif/max(form_lead_count,1)*100:.1f})",
+            f"{deal:,} (%{deal/max(form_lead_count,1)*100:.1f})",
             f"{int(filtered['is_lost'].sum()):,}",
             f"${revenue:,.0f}",
         ],
@@ -635,7 +647,7 @@ def page_reklam_seti(filtered: pd.DataFrame) -> None:
     top_lead = int(agg.iloc[0]["Lead"]) if not agg.empty else 0
 
     render_metric_row([
-        ("Toplam Lead", f"{len(filtered):,}"),
+        ("Toplam Lead", f"{form_lead_count:,}"),
         ("Toplam Reklam Seti", f"{total_sets:,}"),
         ("#1 Reklam Seti", str(top_set)[:32], "alt"),
         ("#1 Lead Sayısı", f"{top_lead:,}", "win"),
@@ -679,7 +691,7 @@ def page_ulke(filtered: pd.DataFrame) -> None:
     top_lead = int(agg.iloc[0]["Lead"]) if not agg.empty else 0
 
     render_metric_row([
-        ("Toplam Lead", f"{len(filtered):,}"),
+        ("Toplam Lead", f"{form_lead_count:,}"),
         ("Toplam Ülke", f"{work['country_iso'].nunique():,}"),
         ("#1 Ülke", top_country, "alt"),
         ("#1 Ülke Lead", f"{top_lead:,}", "win"),
@@ -948,7 +960,7 @@ def page_ai(filtered: pd.DataFrame) -> None:
     render_header(
         "AI Agent — Sohbet Tabanlı Analiz",
         "Gemini 2.5 Flash · Etkileşimli grafikler · Sohbet geçmişlerine erişim",
-        [date_badge, pipe_badge, f"Kapsam: {len(filtered):,} lead"],
+        [date_badge, pipe_badge, f"Kapsam: {form_lead_count:,} lead"],
     )
 
     # AI-spesifik filtre/ayar

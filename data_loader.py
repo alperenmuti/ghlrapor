@@ -416,3 +416,54 @@ def chats_to_context(chats: dict[str, list[dict]], df: pd.DataFrame) -> str:
             out.append(f"- [{ts}] {direction} {mtype}: {body[:280]}")
         out.append("")
     return "\n".join(out)
+
+
+# ---------- form submissions ----------
+
+@st.cache_data(ttl=120, show_spinner=False)
+def cached_form_count(
+    date_after_ms: int | None,
+    date_before_ms: int | None,
+) -> int:
+    try:
+        data = get_client().fetch_form_submissions(
+            page=1,
+            page_limit=1,
+            start_at=date_after_ms,
+            end_at=date_before_ms,
+        )
+        return int(data.get("total", 0))
+    except (GHLAPIError, GHLAuthError):
+        return 0
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def cached_form_submissions(
+    date_after_ms: int | None,
+    date_before_ms: int | None,
+    max_records: int = 10000,
+) -> list[dict]:
+    try:
+        return list(
+            get_client().iter_all_form_submissions(
+                date_after_ms=date_after_ms,
+                date_before_ms=date_before_ms,
+                max_records=max_records,
+            )
+        )
+    except (GHLAPIError, GHLAuthError):
+        return []
+
+
+def form_submissions_to_df(submissions: list[dict]) -> pd.DataFrame:
+    rows = []
+    for s in submissions:
+        rows.append({
+            "id": s.get("id"),
+            "contact_id": s.get("contactId"),
+            "form_id": s.get("formId"),
+            "created_at": parse_dt(s.get("createdAt")),
+        })
+    if not rows:
+        return pd.DataFrame(columns=["id", "contact_id", "form_id", "created_at"])
+    return pd.DataFrame(rows)
